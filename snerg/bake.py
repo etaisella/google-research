@@ -16,6 +16,13 @@
 """Baking script for trained Deferred NeRF networks."""
 import gc
 from os import path
+import os
+
+cwd = os.getcwd()
+os.environ["CUDA_VISIBLE_DEVICES"] = "2,3"
+
+import sys
+sys.path.append(cwd)
 
 from absl import app
 from absl import flags
@@ -80,7 +87,7 @@ def main(unused_argv):
   quality_evaluator = eval_and_refine.ImageQualityEvaluator()
 
   last_step = 0
-  out_dir = path.join(FLAGS.train_dir, "baked")
+  out_dir = path.join(FLAGS.train_dir, "baked_test")
   out_render_dir = path.join(out_dir, "test_preds")
   if jax.host_id() == 0:
     utils.makedirs(out_dir)
@@ -110,6 +117,7 @@ def main(unused_argv):
      viewdir_mlp_params) = model_utils.extract_snerg_mlps(
          state.optimizer.target, scene_params_init)
 
+    print("Building 3D grid")
     # Render out the low-res grid used for culling.
     culling_grid_coordinates = baking.build_3d_grid(
         scene_params_init["min_xyz"], culling_params_init["_voxel_size"],
@@ -126,7 +134,8 @@ def main(unused_argv):
         break
       else:
         continue
-
+    
+    print("Cropping Around Scene")
     # Using this grid, maximize resolution with a tight crop on the scene.
     (render_params, culling_params, atlas_params,
      scene_params) = culling.crop_alpha_grid(render_params_init,
@@ -144,6 +153,7 @@ def main(unused_argv):
         mlp_model, mlp_params, culling_grid_coordinates,
         culling_params["_voxel_size"], scene_params)
 
+    print("Determining Visibilty")
     # Determine which voxels are visible from the training views.
     num_training_cameras = train_dataset.camtoworlds.shape[0]
     culling_grid_visibility = np.zeros_like(culling_grid_alpha)
@@ -171,6 +181,7 @@ def main(unused_argv):
         culling_params["visibility_grid_dilation"]).astype(
             atlas_grid_visibility.dtype)
 
+    print("Packing Atlas")
     # Now we're ready to extract the scene and pack it into a 3D texture atlas.
     atlas, atlas_block_indices = baking.extract_3d_atlas(
         mlp_model, mlp_params, scene_params, render_params, atlas_params,
@@ -213,6 +224,12 @@ def main(unused_argv):
     atlas_t /= uint_multiplier
     gc.collect()
 
+    atlas_block_indices_str = tf.strings.format("{}", atlas_block_indices_t)
+    atlas_str =  tf.strings.format("{}", atlas_t)
+    tf.io.write_file("atlas_block_indices.txt", atlas_block_indices_str)
+    tf.io.write_file("atlas.txt", atlas_str)
+
+    print("Creating Dataset for view-dependant MLP")
     # Ray march through the baked SNeRG scene to create training data for the
     # view-depdence MLP.
     (train_rgbs, _, train_directions,
@@ -230,12 +247,14 @@ def main(unused_argv):
     del train_refs
     gc.collect()
 
+    print("Creating Test Data")
     # Now that we've refined the MLP, create test data with ray marching too.
     (test_rgbs, _, test_directions,
      _) = eval_and_refine.build_sharded_dataset_for_view_dependence(
          test_dataset, atlas_t, atlas_block_indices_t, atlas_params,
          scene_params, render_params)
 
+    print("Evaluating")
     # Now run the view-dependence on the ray marched output images to add
     # back view-depdenent effects. Note that we do this both before and after
     # refining the parameters.
@@ -259,6 +278,7 @@ def main(unused_argv):
     post_psnr, post_ssim = post_image_metrics[0], post_image_metrics[1]
     gc.collect()
 
+    print("Exporting")
     # Export the baked scene so we can view it in the web-viewer.
     export.export_snerg_scene(out_dir, atlas_t.numpy(),
                               atlas_block_indices_t.numpy(),
@@ -287,6 +307,7 @@ def main(unused_argv):
             render_and_path[1]),
         renders_and_paths)
 
+    print("Writing Summary")
     if (not FLAGS.eval_once) and (jax.host_id() == 0):
       summary_writer.image("baked_raw_color", pre_refined_images[0], step)
       summary_writer.image("baked_refined_color", post_refined_images[0], step)
