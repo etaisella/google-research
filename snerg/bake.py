@@ -34,6 +34,7 @@ from jax import random
 import numpy as np
 from scipy import ndimage
 import tensorflow as tf
+import json
 
 from snerg.nerf import datasets
 from snerg.nerf import models
@@ -194,6 +195,18 @@ def main(unused_argv):
     del culling_grid_visibility
     gc.collect()
 
+    print("Saving atlas")
+    with open('atlas.npy', 'wb') as f:
+      np.save(f, atlas)
+    with open('atlas_block_indices.npy', 'wb') as f:
+      np.save(f, atlas_block_indices)
+    with open("atlas_params.json", "w") as f:
+      json.dump(atlas_params, f) 
+    with open("scene_params.json", "w") as f:
+      json.dump(scene_params, f)
+    with open("render_params.json", "w") as f:
+      json.dump(render_params, f) 
+
     # Convert the atlas to a tensor, so we can use can use tensorflow's massive
     # CPU parallelism for ray marching.
     atlas_block_indices_t = tf.convert_to_tensor(atlas_block_indices)
@@ -223,11 +236,6 @@ def main(unused_argv):
     gc.collect()
     atlas_t /= uint_multiplier
     gc.collect()
-
-    atlas_block_indices_str = tf.strings.format("{}", atlas_block_indices_t)
-    atlas_str =  tf.strings.format("{}", atlas_t)
-    tf.io.write_file("atlas_block_indices.txt", atlas_block_indices_str)
-    tf.io.write_file("atlas.txt", atlas_str)
 
     print("Creating Dataset for view-dependant MLP")
     # Ray march through the baked SNeRG scene to create training data for the
